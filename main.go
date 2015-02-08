@@ -5,13 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"time"
+	"os/signal"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func showUsage(out *os.File) {
@@ -79,29 +81,113 @@ func main() {
 
 func serverMain(args []string) {
 	flags := flag.NewFlagSet("server", flag.ExitOnError)
-	addr := flags.String("addr", ":8000", "specify listen address and port.")
+	clipFifo := flags.String("clip", "$HOME/clip", "a path to fifo. default is $HOME/clip.")
+	privateKey := flags.String("key", "$HOME/.ssh/id_rsa", "a path to private key file. default is $HOME/.ssh/id_rsa.")
+	remoteAddr := flags.String("addr", "192.168.0.1:22", "address of remote host. default is 192.168.0.1:22.")
+	netclipCmd := flags.String("netclip", "/usr/local/bin/netclip", "a path to netclip executable.")
 	flags.Parse(args)
 
+	clipWriter, ok := clipWriters[runtime.GOOS]
 	// check OS
-	if _, ok := clipWriters[runtime.GOOS]; !ok {
-		log.Fatal("Unsupported OS: ", runtime.GOOS)
+	if !ok {
+		log.Fatal("Unsupported host OS: ", runtime.GOOS)
 	}
 
-	listener, err := net.Listen("tcp4", *addr)
+	privateKeyBytes, err := ioutil.ReadFile(*privateKey)
+	if err != nil {
+		log.Fatal("failed to read key file: ", err)
+	}
+	privateKeySigner, err := ssh.ParsePrivateKey(privateKeyBytes)
+	if err != nil {
+		log.Fatal("failed to parse key: ", err)
+	}
+
+	config := &ssh.ClientConfig{
+		User: "uchan",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(privateKeySigner),
+		},
+	}
+
+	client, err := ssh.Dial("tcp4", *remoteAddr, config)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer listener.Close()
 
-	log.Println("Listening on", *addr)
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+
 	for {
-		conn, err := listener.Accept()
+		session, err := client.NewSession()
 		if err != nil {
-			log.Print(err)
-			continue
+			log.Fatal(err)
 		}
 
-		go serve(conn)
+		stdout, err := session.StdoutPipe()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		stdin, err := session.StdinPipe()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Println("executing remote netclip command.")
+		err = session.Start(fmt.Sprintf(`%s client "%s"`, *netclipCmd, *clipFifo));
+		if  err != nil {
+			log.Fatal(err)
+		}
+
+		buf := new(bytes.Buffer)
+		stdoutChan := make(chan byte, 1024)
+		go func() {
+			err := readLoop(stdout, stdoutChan)
+			log.Println(err)
+		}()
+
+		Loop:
+		for {
+			select {
+			case c, ok := <-stdoutChan:
+				if ok {
+					buf.WriteByte(c)
+				} else {
+					session.Close()
+					clipWriter(buf.Bytes())
+					break Loop
+				}
+			case <-signalChan:
+				log.Println("sending exit command to remote netclip command.")
+				_, err := stdin.Write([]byte{ 0x03 })
+				if err != nil {
+					log.Fatal(err)
+				}
+				err = stdin.Close()
+				if err != nil {
+					log.Fatal(err)
+				}
+				log.Println("waiting remote netclip command to stop.")
+				session.Wait()
+				session.Close()
+				log.Println("exiting by Interrupt.")
+				os.Exit(0)
+			}
+		}
+	}
+}
+
+func readLoop(reader io.Reader, queue chan<- byte) error {
+	buf := make([]byte, 1024)
+	for {
+		n, err := reader.Read(buf)
+		for i := 0; i < n; i++ {
+			queue <- buf[i]
+		}
+		if err != nil {
+			close(queue)
+			return err
+		}
 	}
 }
 
@@ -141,30 +227,6 @@ var (
 	}
 )
 
-func serve(conn net.Conn) {
-	buf := new(bytes.Buffer)
-	tmp := make([]byte, 1024)
-	for {
-		n, err := conn.Read(tmp)
-		if err != nil {
-			if n != 0 && err != io.EOF {
-				log.Print(err)
-			}
-			break
-		}
-		buf.Write(tmp[:n])
-	}
-
-	writer := clipWriters[runtime.GOOS]
-	n, err := writer(buf.Bytes())
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	log.Print(n, " bytes trasfered to clipboard.")
-}
-
 func writeAllBytes(dest io.Writer, src []byte) error {
 	written := 0
 	for written < len(src) {
@@ -179,34 +241,51 @@ func writeAllBytes(dest io.Writer, src []byte) error {
 
 func clientMain(args []string) {
 	flags := flag.NewFlagSet("client", flag.ExitOnError)
-	addr := flags.String("addr", "localhost:8000",
-		"specify address and port to connect.")
+	//addr := flags.String("addr", "localhost:8000",
+	//	"specify address and port to connect.")
 	flags.Parse(args)
 
-	conn, err := net.DialTimeout("tcp4", *addr, 5*time.Second)
-	if err != nil {
-		log.Fatal(err)
+	if flags.NArg() == 0 {
+		log.Fatal("a path to clip fifo is required.")
 	}
-	defer conn.Close()
 
-	log.Println("connected to", conn.RemoteAddr())
+	clip, err := os.Open(flags.Arg(0))
+	if err != nil {
+		log.Fatal("failed to open clip fifo: ", err)
+	}
 
-	//written, err := io.Copy(conn, os.Stdin)
-	var written int64 = 0
-	buf := make([]byte, 1024)
-Loop:
+	stdinChan := make(chan byte, 1)
+	clipChan := make(chan byte, 1024)
+
+	go func() {
+		err := readLoop(os.Stdin, stdinChan)
+		log.Fatal(err)
+	}()
+
+	go func() {
+		err := readLoop(clip, clipChan)
+		log.Fatal(err)
+	}()
+
+	buf := new(bytes.Buffer)
 	for {
-		n, err := os.Stdin.Read(buf)
-		switch {
-		case n < 0:
-			log.Fatal(err)
-		case n == 0:
-			break Loop
-		case n > 0:
-			writeAllBytes(conn, buf[:n])
-			written += int64(n)
+		select {
+		case c := <-stdinChan:
+			if c == 0x03 {
+				// exit command
+				os.Stdout.Write(buf.Bytes())
+				log.Println("exit command.")
+				os.Exit(0)
+			} else {
+				log.Fatal("unknown command: ", c)
+			}
+		case c, ok := <-clipChan:
+			if ok {
+				buf.WriteByte(c)
+			} else {
+				os.Stdout.Write(buf.Bytes())
+				os.Exit(0)
+			}
 		}
 	}
-
-	log.Print(written, " bytes were transfered.")
 }
