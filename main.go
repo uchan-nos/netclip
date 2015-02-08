@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -81,6 +82,11 @@ func serverMain(args []string) {
 	addr := flags.String("addr", ":8000", "specify listen address and port.")
 	flags.Parse(args)
 
+	// check OS
+	if _, ok := clipWriters[runtime.GOOS]; !ok {
+		log.Fatal("Unsupported OS: ", runtime.GOOS)
+	}
+
 	listener, err := net.Listen("tcp4", *addr)
 	if err != nil {
 		log.Fatal(err)
@@ -99,6 +105,42 @@ func serverMain(args []string) {
 	}
 }
 
+type WriteFuncType func ([]byte) (int, error)
+
+func makeStdinWriter(command string, args ...string) WriteFuncType {
+	return func (data []byte) (int, error) {
+		cmd := exec.Command(command, args...)
+		writer, err := cmd.StdinPipe()
+		if err != nil {
+			return 0, err
+		}
+
+		n, err := writer.Write(data)
+		if err != nil {
+			return n, err
+		}
+
+		err = writer.Close()
+		if err != nil {
+			return n, err
+		}
+
+		err = cmd.Run()
+		if err != nil {
+			return n, err
+		}
+
+		return n, nil
+	}
+}
+
+var (
+	clipWriters = map[string]WriteFuncType {
+		"windows": makeStdinWriter(`C:\Windows\System32\clip.exe`),
+		"darwin": makeStdinWriter("/usr/bin/pbcopy"),
+	}
+)
+
 func serve(conn net.Conn) {
 	buf := new(bytes.Buffer)
 	tmp := make([]byte, 1024)
@@ -113,32 +155,14 @@ func serve(conn net.Conn) {
 		buf.Write(tmp[:n])
 	}
 
-	cmd := exec.Command("C:\\Windows\\System32\\clip.exe")
-	writer, err := cmd.StdinPipe()
+	writer := clipWriters[runtime.GOOS]
+	n, err := writer(buf.Bytes())
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
-	n, err := writer.Write(buf.Bytes())
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	err = writer.Close()
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	err = cmd.Run()
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	log.Print(n, " bytes trasfered to clip.exe.")
+	log.Print(n, " bytes trasfered to clipboard.")
 }
 
 func writeAllBytes(dest io.Writer, src []byte) error {
