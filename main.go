@@ -249,22 +249,26 @@ func clientMain(args []string) {
 		log.Fatal("a path to clip fifo is required.")
 	}
 
-	clip, err := os.Open(flags.Arg(0))
-	if err != nil {
-		log.Fatal("failed to open clip fifo: ", err)
-	}
-
 	stdinChan := make(chan byte, 1)
 	clipChan := make(chan byte, 1024)
 
 	go func() {
 		err := readLoop(os.Stdin, stdinChan)
-		log.Fatal(err)
+		if err != io.EOF {
+			log.Fatal(err)
+		}
 	}()
 
 	go func() {
-		err := readLoop(clip, clipChan)
-		log.Fatal(err)
+		clip, err := os.Open(flags.Arg(0))
+		if err != nil {
+			log.Fatal("failed to open clip fifo: ", err)
+		}
+
+		err = readLoop(clip, clipChan)
+		if err != io.EOF {
+			log.Fatal(err)
+		}
 	}()
 
 	buf := new(bytes.Buffer)
