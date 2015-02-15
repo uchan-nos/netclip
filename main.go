@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,11 +10,14 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
-	"os/signal"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/encoding/japanese"
 )
 
 func showUsage(out *os.File) {
@@ -79,37 +83,105 @@ func main() {
 	act.Func(flags.Args()[1:])
 }
 
+func passwordCallback() (secret string, err error) {
+	stdin := int(os.Stdin.Fd())
+	if !terminal.IsTerminal(stdin) {
+		log.Println("this is not a terminal")
+		return "", errors.New("Can't use password authentication in non-terminal.")
+	}
+
+	fmt.Fprint(os.Stdout, "input password >")
+	passBytes, err := terminal.ReadPassword(stdin)
+	if err != nil {
+		return "", err
+	}
+
+	return string(passBytes), nil
+}
+
+func showFlags(out *os.File, flagSet *flag.FlagSet) {
+	fmt.Fprintln(out, "Options:")
+	flagSet.VisitAll(func(f *flag.Flag) {
+		if f.DefValue == "false" || f.DefValue == "true" {
+			fmt.Fprintf(out, "  -%-12s\n          %v\n",
+				f.Name, f.Usage)
+		} else {
+			fmt.Fprintf(out, "  -%-12s\n          %v\n",
+				fmt.Sprintf("%s=%s", f.Name, f.DefValue), f.Usage)
+		}
+	})
+}
+
+func showServerUsage(out *os.File, flagSet *flag.FlagSet) {
+	prog := filepath.Base(os.Args[0])
+	fmt.Fprintln(out, "Usage:", prog, "server [options ...] remote-addr")
+	fmt.Fprintln(out, "")
+	showFlags(out, flagSet)
+}
+
 func serverMain(args []string) {
 	flags := flag.NewFlagSet("server", flag.ExitOnError)
-	clipFifo := flags.String("clip", "$HOME/clip", "a path to fifo. default is $HOME/clip.")
-	privateKey := flags.String("key", "$HOME/.ssh/id_rsa", "a path to private key file. default is $HOME/.ssh/id_rsa.")
-	remoteAddr := flags.String("addr", "192.168.0.1:22", "address of remote host. default is 192.168.0.1:22.")
-	netclipCmd := flags.String("netclip", "/usr/local/bin/netclip", "a path to netclip executable.")
-	flags.Parse(args)
+	help := flags.Bool("help", false, "show this help.")
+	privateKey := flags.String("key",
+		filepath.Join(guessHomeDir(), ".ssh", "id_rsa"),
+		"a path to private key file.")
+	usePasswd := flags.Bool("use-passwd",
+		false,
+		"use password authentication. use public key authentication by default.")
+	userName := flags.String("user",
+		guessUserName(),
+		"ssh user name")
+	clipFifo := flags.String("clip",
+		"$HOME/clip",
+		"a remote path to a fifo.")
+	netclipCmd := flags.String("netclip",
+		"netclip",
+		"a remote path to netclip executable. search through $PATH by default.")
+	err := flags.Parse(args)
 
-	clipWriter, ok := clipWriters[runtime.GOOS]
-	// check OS
+	if err != nil {
+		showServerUsage(os.Stderr, flags)
+		os.Exit(1)
+	} else if *help {
+		showServerUsage(os.Stdout, flags)
+		os.Exit(0)
+	} else if flags.NArg() == 0 {
+		fmt.Fprint(os.Stderr, "Remote address must be specified.\n\n")
+		showServerUsage(os.Stderr, flags)
+		os.Exit(1)
+	}
+
+	remoteAddr := flags.Arg(0)
+
+	clipWriterMaker, ok := clipWriterMakers[runtime.GOOS]
 	if !ok {
 		log.Fatal("Unsupported host OS: ", runtime.GOOS)
 	}
+	clipWriter := clipWriterMaker()
 
-	privateKeyBytes, err := ioutil.ReadFile(*privateKey)
-	if err != nil {
-		log.Fatal("failed to read key file: ", err)
-	}
-	privateKeySigner, err := ssh.ParsePrivateKey(privateKeyBytes)
-	if err != nil {
-		log.Fatal("failed to parse key: ", err)
+	var authMethod ssh.AuthMethod
+
+	if *usePasswd {
+		authMethod = ssh.PasswordCallback(passwordCallback)
+	} else {
+		privateKeyBytes, err := ioutil.ReadFile(*privateKey)
+		if err != nil {
+			log.Fatal("failed to read key file: ", err)
+		}
+		privateKeySigner, err := ssh.ParsePrivateKey(privateKeyBytes)
+		if err != nil {
+			log.Fatal("failed to parse key: ", err)
+		}
+		authMethod = ssh.PublicKeys(privateKeySigner)
 	}
 
 	config := &ssh.ClientConfig{
-		User: "uchan",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(privateKeySigner),
-		},
+		User: *userName,
+		Auth: []ssh.AuthMethod{ authMethod },
 	}
 
-	client, err := ssh.Dial("tcp4", *remoteAddr, config)
+	log.Println("connecting to", remoteAddr)
+	client, err := ssh.Dial("tcp4", remoteAddr, config)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -154,7 +226,7 @@ func serverMain(args []string) {
 					buf.WriteByte(c)
 				} else {
 					session.Close()
-					clipWriter(buf.Bytes())
+					clipWriter.Write(buf.Bytes())
 					break Loop
 				}
 			case <-signalChan:
@@ -191,10 +263,13 @@ func readLoop(reader io.Reader, queue chan<- byte) error {
 	}
 }
 
-type WriteFuncType func ([]byte) (int, error)
+type WriterFunc func ([]byte) (int, error)
+func (f WriterFunc) Write(data []byte) (int, error) {
+	return f(data)
+}
 
-func makeStdinWriter(command string, args ...string) WriteFuncType {
-	return func (data []byte) (int, error) {
+func makeStdinWriter(command string, args ...string) io.Writer {
+	return WriterFunc(func (data []byte) (int, error) {
 		cmd := exec.Command(command, args...)
 		writer, err := cmd.StdinPipe()
 		if err != nil {
@@ -217,13 +292,19 @@ func makeStdinWriter(command string, args ...string) WriteFuncType {
 		}
 
 		return n, nil
-	}
+	})
 }
 
 var (
-	clipWriters = map[string]WriteFuncType {
-		"windows": makeStdinWriter(`C:\Windows\System32\clip.exe`),
-		"darwin": makeStdinWriter("/usr/bin/pbcopy"),
+	clipWriterMakers = map[string]func() io.Writer {
+		"windows": func() io.Writer {
+			return transform.NewWriter(
+				makeStdinWriter(`C:\Windows\System32\clip.exe`),
+				japanese.ShiftJIS.NewEncoder())
+		},
+		"darwin": func() io.Writer {
+			return makeStdinWriter("/usr/bin/pbcopy")
+		},
 	}
 )
 
