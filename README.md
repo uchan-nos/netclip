@@ -97,11 +97,11 @@ netclip server コマンドのオプションを説明します。
 | オプション | 初期値 | 説明 |
 |------------|--------|------|
 | -help | | ヘルプを表示します |
-| -key <path> | C:\Users\your-name\.ssh\id_rsa | SSH 通信で使うための秘密鍵へのパスです |
-| -use-passwd | false | SSH の認証で公開鍵認証の代わりにパスワード認証を使います |
-| -user <name> | your-name | SSH の認証で使うユーザ名です。リモートにログインするためのユーザ名を指定します |
-| -clip <path> | $HOME/clip | リモート側での clip ファイルへのパスです |
-| -netclip <path> | netclip | リモート側での netclip コマンドへのパスです。 netclip コマンドにパスが通ってない場合に指定します |
+| -key <path> | `C:\Users\your-name\.ssh\id_rsa` | SSH 通信で使うための秘密鍵へのパスです |
+| -use-passwd | `false` | SSH の認証で公開鍵認証の代わりにパスワード認証を使います |
+| -user <name> | `your-name` | SSH の認証で使うユーザ名です。リモートにログインするためのユーザ名を指定します |
+| -clip <path> | `$HOME/clip` | リモート側での clip ファイルへのパスです |
+| -netclip <path> | `netclip` | リモート側での netclip コマンドへのパスです。 netclip コマンドにパスが通ってない場合に指定します |
 
 `-key` や `-user` の初期値は、コマンド実行時の環境変数から自動推定するため、
 上記の初期値とは異なる場合があります。
