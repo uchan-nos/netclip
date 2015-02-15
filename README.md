@@ -126,7 +126,7 @@ netclip コマンドを /usr/local/bin などにコピーしておいても
 ### 実行例
 以下にサーバの実行例をいくつか示します。
 
-- netclip にパスが通っていないとき
+- リモート側の netclip にパスが通っていないとき
 
   ```
   > netclip.exe server -netclip /Users/your-name/go/src/github.com/uchan-nos/netclip/netclip 192.168.0.2:22
