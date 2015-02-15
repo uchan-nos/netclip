@@ -22,21 +22,17 @@ Go 言語が動く POSIX なシステムなら同じように動かせると思�
 
 - コマンドのインストール  
 
+  リモート側の OS とアーキテクチャに合ったコンパイル済みバイナリを
+  https://github.com/uchan-nos/netclip/releases/ から取得し、お好みの場所に配置します。
+
+  以下は v0.1 の場合です。最新バージョンに合わせて変更してください。
+
   ```
-  $ cd $HOME
-  $ mkdir go
-  $ cd go
-  $ export GOPATH=`pwd`
-  $ mkdir -p src/github.com/uchan-nos
-  $ cd src/github.com/uchan-nos
-  $ git clone https://github.com/uchan-nos/netclip.git
-  $ cd netclip
-  $ go get
-  $ go build
+  curl -O -L https://github.com/uchan-nos/netclip/releases/download/v0.1/netclip_v0.1_darwin_amd64.zip
+  unzip netclip_v0.1_darwin_amd64.zip
   ```
-  
-  要するに普通の Go 言語プログラムですから Go 言語の習慣に従ってビルドするだけです。
-  もし可能なら、生成された netclip コマンドを /usr/bin など、
+
+  もし可能なら、展開された netclip コマンドを /usr/bin など、
   SSH 環境下でも標準でパスが通るような場所にコピーしておくと楽です。
   （/usr/local/bin は SSH 環境下だとパスが通っていない場合がありますので注意が必要です。）
 
@@ -52,22 +48,9 @@ Go 言語が動く POSIX なシステムなら同じように動かせると思�
   書き込み権を自分だけに制限することで、他人が勝手にクリップボードに書き込みするようなイタズラができなくなります。
   
 ## ローカル側の準備
-リモート側と同様に netclip コマンドをビルドします。
+リモート側と同様に netclip コマンドをダウンロードして展開します。
 ローカル側は Windows 7 で動作確認を取っていますが、
 それ以外の Windows や Go 言語が動く POSIX なシステムでも同じように動かせると思います。
-
-  ```
-  > cd \Users\your-name
-  > mkdir go
-  > cd go
-  > set GOPATH=%CD%
-  > mkdir src\github.com\uchan-nos
-  > cd src\github.com\uchan-nos
-  > git clone https://github.com/uchan-nos/netclip.git
-  > cd netclip
-  > go get
-  > go build
-  ```
 
 ## サーバの起動
 リモート側、ローカル側ともに netclip コマンドがビルドできれば、後はローカル側でサーバを立てるだけです。
